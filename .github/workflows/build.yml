@@ -10,6 +10,1107 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
     - uses: gradle/actions/setup-gradle@v3
+
+    - name: Generate Android project
+      run: |
+        mkdir -p app/src/main/java/com/servermonitor/ui/fragment
+        mkdir -p app/src/main/java/com/servermonitor/data/model
+        mkdir -p app/src/main/java/com/servermonitor/data/local
+        mkdir -p app/src/main/java/com/servermonitor/data/repository
+        mkdir -p app/src/main/java/com/servermonitor/service
+        mkdir -p app/src/main/java/com/servermonitor/util
+        mkdir -p app/src/main/res/layout
+        mkdir -p app/src/main/res/values
+        mkdir -p app/src/main/res/menu
+        mkdir -p app/src/main/res/drawable
+        mkdir -p app/src/main/res/navigation
+
+        cat > settings.gradle.kts << 'EOF'
+        pluginManagement {
+          repositories {
+            google()
+            mavenCentral()
+            gradlePluginPortal()
+          }
+        }
+        dependencyResolutionManagement {
+          repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+          repositories {
+            google()
+            mavenCentral()
+          }
+        }
+        rootProject.name = "ServerMonitor"
+        include(":app")
+        EOF
+
+        cat > build.gradle.kts << 'EOF'
+        plugins {
+          id("com.android.application") version "8.2.0" apply false
+          id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          id("com.google.devtools.ksp") version "1.9.22-1.0.17" apply false
+        }
+        EOF
+
+        cat > app/build.gradle.kts << 'EOF'
+        plugins {
+          id("com.android.application")
+          id("org.jetbrains.kotlin.android")
+          id("com.google.devtools.ksp")
+        }
+
+        android {
+          namespace = "com.servermonitor"
+          compileSdk = 34
+
+          defaultConfig {
+            applicationId = "com.servermonitor"
+            minSdk = 26
+            targetSdk = 34
+            versionCode = 1
+            versionName = "1.0"
+          }
+
+          buildFeatures {
+            viewBinding = true
+          }
+
+          compileOptions {
+            sourceCompatibility = JavaVersion.VERSION_17
+            targetCompatibility = JavaVersion.VERSION_17
+          }
+          kotlinOptions {
+            jvmTarget = "17"
+          }
+        }
+
+        dependencies {
+          implementation("androidx.core:core-ktx:1.12.0")
+          implementation("androidx.appcompat:appcompat:1.6.1")
+          implementation("com.google.android.material:material:1.11.0")
+          implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+
+          implementation("androidx.navigation:navigation-fragment-ktx:2.7.6")
+          implementation("androidx.navigation:navigation-ui-ktx:2.7.6")
+
+          implementation("androidx.room:room-runtime:2.6.1")
+          implementation("androidx.room:room-ktx:2.6.1")
+          ksp("androidx.room:room-compiler:2.6.1")
+
+          implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+          implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
+          implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.7.0")
+
+          implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+          implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+          implementation("androidx.recyclerview:recyclerview:1.3.2")
+        }
+        EOF
+
+        # -------- Kotlin source files --------
+        cat > app/src/main/java/com/servermonitor/data/model/Server.kt << 'EOF'
+        package com.servermonitor.data.model
+
+        import androidx.room.Entity
+        import androidx.room.PrimaryKey
+
+        @Entity(tableName = "servers")
+        data class Server(
+          @PrimaryKey(autoGenerate = true) val id: Long = 0,
+          val name: String,
+          val type: String,
+          val host: String,
+          val port: Int = 0,
+          val isEnabled: Boolean = true,
+          val lastStatus: Boolean = false,
+          val lastResponse: String = "",
+          val lastCheckTime: Long = 0L,
+          val responseTimeMs: Long = 0L
+        )
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/data/local/ServerDao.kt << 'EOF'
+        package com.servermonitor.data.local
+
+        import androidx.room.*
+        import com.servermonitor.data.model.Server
+        import kotlinx.coroutines.flow.Flow
+
+        @Dao
+        interface ServerDao {
+          @Query("SELECT * FROM servers ORDER BY name ASC")
+          fun getAll(): Flow<List<Server>>
+
+          @Query("SELECT * FROM servers WHERE id = :id")
+          suspend fun getById(id: Long): Server?
+
+          @Insert(onConflict = OnConflictStrategy.REPLACE)
+          suspend fun insert(server: Server): Long
+
+          @Update
+          suspend fun update(server: Server)
+
+          @Delete
+          suspend fun delete(server: Server)
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/data/local/AppDatabase.kt << 'EOF'
+        package com.servermonitor.data.local
+
+        import android.content.Context
+        import androidx.room.Database
+        import androidx.room.Room
+        import androidx.room.RoomDatabase
+        import com.servermonitor.data.model.Server
+
+        @Database(entities = [Server::class], version = 1)
+        abstract class AppDatabase : RoomDatabase() {
+          abstract fun serverDao(): ServerDao
+
+          companion object {
+            @Volatile private var INSTANCE: AppDatabase? = null
+
+            fun getInstance(context: Context): AppDatabase =
+              INSTANCE ?: synchronized(this) {
+                INSTANCE ?: Room.databaseBuilder(
+                  context, AppDatabase::class.java, "server_monitor_db"
+                ).build().also { INSTANCE = it }
+              }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/data/repository/ServerRepository.kt << 'EOF'
+        package com.servermonitor.data.repository
+
+        import com.servermonitor.data.local.ServerDao
+        import com.servermonitor.data.model.Server
+        import kotlinx.coroutines.flow.Flow
+
+        class ServerRepository(private val dao: ServerDao) {
+          val allServers: Flow<List<Server>> = dao.getAll()
+
+          suspend fun getById(id: Long): Server? = dao.getById(id)
+
+          suspend fun insert(server: Server): Long = dao.insert(server)
+
+          suspend fun update(server: Server) = dao.update(server)
+
+          suspend fun delete(server: Server) = dao.delete(server)
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/util/MonitorChecker.kt << 'EOF'
+        package com.servermonitor.util
+
+        import com.servermonitor.data.model.Server
+        import kotlinx.coroutines.Dispatchers
+        import kotlinx.coroutines.withContext
+        import okhttp3.OkHttpClient
+        import okhttp3.Request
+        import java.net.*
+
+        object MonitorChecker {
+
+          private val client = OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+
+          data class CheckResult(
+            val success: Boolean,
+            val response: String,
+            val responseTimeMs: Long
+          )
+
+          suspend fun check(server: Server): CheckResult = withContext(Dispatchers.IO) {
+            val start = System.currentTimeMillis()
+            try {
+              when (server.type) {
+                "Website", "RestApi", "TelegramBot" -> checkHttp(server.host, server.port)
+                "Minecraft" -> checkTcp(server.host, server.port)
+                "TCP" -> checkTcp(server.host, server.port)
+                "Ping" -> checkPing(server.host)
+                "Steam" -> checkTcp(server.host, server.port)
+                "Database" -> checkTcp(server.host, server.port)
+                else -> CheckResult(false, "Unknown type", 0)
+              }.let {
+                it.copy(responseTimeMs = System.currentTimeMillis() - start)
+              }
+            } catch (e: Exception) {
+              CheckResult(false, e.message ?: "Error", System.currentTimeMillis() - start)
+            }
+          }
+
+          private fun checkHttp(host: String, port: Int): CheckResult {
+            val url = if (port > 0) "http://$host:$port" else "http://$host"
+            val request = Request.Builder().url(url).build()
+            client.newCall(request).execute().use { response ->
+              if (response.isSuccessful) CheckResult(true, "HTTP ${response.code}", 0)
+              else CheckResult(false, "HTTP ${response.code}", 0)
+            }
+          }
+
+          private fun checkTcp(host: String, port: Int): CheckResult {
+            return try {
+              Socket().use { socket ->
+                socket.connect(InetSocketAddress(host, port), 3000)
+                CheckResult(true, "Connected", 0)
+              }
+            } catch (e: Exception) {
+              CheckResult(false, e.message ?: "Connection failed", 0)
+            }
+          }
+
+          private fun checkPing(host: String): CheckResult {
+            return try {
+              val address = InetAddress.getByName(host)
+              if (address.isReachable(3000)) CheckResult(true, "Reachable", 0)
+              else CheckResult(false, "Unreachable", 0)
+            } catch (e: Exception) {
+              CheckResult(false, e.message ?: "Ping failed", 0)
+            }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/service/NotificationHelper.kt << 'EOF'
+        package com.servermonitor.service
+
+        import android.app.NotificationChannel
+        import android.app.NotificationManager
+        import android.content.Context
+        import androidx.core.app.NotificationCompat
+        import androidx.core.app.NotificationManagerCompat
+        import com.servermonitor.data.model.Server
+
+        object NotificationHelper {
+          private const val CHANNEL_ID = "server_monitor_channel"
+
+          fun createChannel(context: Context) {
+            val channel = NotificationChannel(
+              CHANNEL_ID,
+              "Server Status Changes",
+              NotificationManager.IMPORTANCE_DEFAULT
+            )
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+              .createNotificationChannel(channel)
+          }
+
+          fun show(context: Context, server: Server, isOnline: Boolean) {
+            val status = if (isOnline) "ONLINE" else "OFFLINE"
+            val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+              .setSmallIcon(android.R.drawable.ic_dialog_info)
+              .setContentTitle("${server.name} is $status")
+              .setContentText(server.host)
+              .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            try {
+              NotificationManagerCompat.from(context).notify(server.id.toInt(), builder.build())
+            } catch (_: SecurityException) {}
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/service/BootReceiver.kt << 'EOF'
+        package com.servermonitor.service
+
+        import android.content.BroadcastReceiver
+        import android.content.Context
+        import android.content.Intent
+        import androidx.work.ExistingPeriodicWorkPolicy
+        import androidx.work.PeriodicWorkRequestBuilder
+        import androidx.work.WorkManager
+        import java.util.concurrent.TimeUnit
+
+        class BootReceiver : BroadcastReceiver() {
+          override fun onReceive(context: Context, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
+              val request = PeriodicWorkRequestBuilder<MonitorWorker>(15, TimeUnit.MINUTES).build()
+              WorkManager.getInstance(context)
+                .enqueueUniquePeriodicWork("monitor", ExistingPeriodicWorkPolicy.KEEP, request)
+            }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/service/MonitorWorker.kt << 'EOF'
+        package com.servermonitor.service
+
+        import android.content.Context
+        import androidx.work.CoroutineWorker
+        import androidx.work.WorkerParameters
+        import com.servermonitor.data.local.AppDatabase
+        import com.servermonitor.data.repository.ServerRepository
+        import com.servermonitor.util.MonitorChecker
+        import kotlinx.coroutines.Dispatchers
+        import kotlinx.coroutines.withContext
+
+        class MonitorWorker(
+          appContext: Context,
+          params: WorkerParameters
+        ) : CoroutineWorker(appContext, params) {
+
+          override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+            try {
+              val db = AppDatabase.getInstance(applicationContext)
+              val repo = ServerRepository(db.serverDao())
+              val servers = repo.allServers
+              servers.collect { list ->
+                list.filter { it.isEnabled }.forEach { server ->
+                  val result = MonitorChecker.check(server)
+                  val newStatus = result.success
+                  if (server.lastStatus != newStatus) {
+                    NotificationHelper.show(applicationContext, server, newStatus)
+                  }
+                  repo.update(server.copy(
+                    lastStatus = newStatus,
+                    lastResponse = result.response,
+                    responseTimeMs = result.responseTimeMs,
+                    lastCheckTime = System.currentTimeMillis()
+                  ))
+                }
+              }
+              Result.success()
+            } catch (e: Exception) {
+              Result.retry()
+            }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/ui/ServerViewModel.kt << 'EOF'
+        package com.servermonitor.ui
+
+        import android.app.Application
+        import androidx.lifecycle.AndroidViewModel
+        import androidx.lifecycle.viewModelScope
+        import com.servermonitor.data.local.AppDatabase
+        import com.servermonitor.data.model.Server
+        import com.servermonitor.data.repository.ServerRepository
+        import com.servermonitor.util.MonitorChecker
+        import kotlinx.coroutines.flow.SharingStarted
+        import kotlinx.coroutines.flow.stateIn
+        import kotlinx.coroutines.launch
+
+        class ServerViewModel(application: Application) : AndroidViewModel(application) {
+          private val dao = AppDatabase.getInstance(application).serverDao()
+          private val repository = ServerRepository(dao)
+
+          val servers = repository.allServers.stateIn(
+            viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList()
+          )
+
+          fun addServer(server: Server) = viewModelScope.launch {
+            repository.insert(server)
+          }
+
+          fun deleteServer(server: Server) = viewModelScope.launch {
+            repository.delete(server)
+          }
+
+          fun toggleServer(server: Server) = viewModelScope.launch {
+            repository.update(server.copy(isEnabled = !server.isEnabled))
+          }
+
+          fun checkServer(server: Server) = viewModelScope.launch {
+            val result = MonitorChecker.check(server)
+            repository.update(server.copy(
+              lastStatus = result.success,
+              lastResponse = result.response,
+              responseTimeMs = result.responseTimeMs,
+              lastCheckTime = System.currentTimeMillis()
+            ))
+          }
+
+          fun checkAll() = viewModelScope.launch {
+            servers.value.forEach { server ->
+              val result = MonitorChecker.check(server)
+              repository.update(server.copy(
+                lastStatus = result.success,
+                lastResponse = result.response,
+                responseTimeMs = result.responseTimeMs,
+                lastCheckTime = System.currentTimeMillis()
+              ))
+            }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/ui/MainActivity.kt << 'EOF'
+        package com.servermonitor.ui
+
+        import android.os.Bundle
+        import androidx.appcompat.app.AppCompatActivity
+        import androidx.navigation.fragment.NavHostFragment
+        import androidx.navigation.ui.setupWithNavController
+        import com.servermonitor.R
+        import com.servermonitor.databinding.ActivityMainBinding
+        import com.servermonitor.service.NotificationHelper
+
+        class MainActivity : AppCompatActivity() {
+          private lateinit var binding: ActivityMainBinding
+
+          override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+            binding = ActivityMainBinding.inflate(layoutInflater)
+            setContentView(binding.root)
+
+            NotificationHelper.createChannel(this)
+
+            val navHost = supportFragmentManager
+              .findFragmentById(R.id.nav_host_fragment) as NavHostFragment
+            val navController = navHost.navController
+            binding.bottomNavigation.setupWithNavController(navController)
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/ui/fragment/ServersFragment.kt << 'EOF'
+        package com.servermonitor.ui.fragment
+
+        import android.os.Bundle
+        import android.view.*
+        import androidx.fragment.app.Fragment
+        import androidx.lifecycle.ViewModelProvider
+        import androidx.navigation.fragment.findNavController
+        import androidx.recyclerview.widget.LinearLayoutManager
+        import com.servermonitor.R
+        import com.servermonitor.data.model.Server
+        import com.servermonitor.databinding.FragmentServersBinding
+        import com.servermonitor.ui.ServerViewModel
+        import com.servermonitor.ui.adapter.ServerAdapter
+
+        class ServersFragment : Fragment(R.layout.fragment_servers) {
+          private lateinit var binding: FragmentServersBinding
+          private lateinit var viewModel: ServerViewModel
+          private lateinit var adapter: ServerAdapter
+
+          override fun onCreateView(
+            inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+          ): View {
+            binding = FragmentServersBinding.inflate(inflater, container, false)
+            return binding.root
+          }
+
+          override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+            super.onViewCreated(view, savedInstanceState)
+            viewModel = ViewModelProvider(requireActivity())[ServerViewModel::class.java]
+
+            adapter = ServerAdapter(
+              onItemClick = { server ->
+                findNavController().navigate(
+                  R.id.action_serversFragment_to_serverDetailFragment,
+                  Bundle().apply { putLong("serverId", server.id) }
+                )
+              },
+              onCheckClick = { server -> viewModel.checkServer(server) }
+            )
+
+            binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
+            binding.recyclerView.adapter = adapter
+
+            viewModel.servers.observe(viewLifecycleOwner) { servers ->
+              adapter.submitList(servers)
+              binding.emptyView.visibility = if (servers.isEmpty()) View.VISIBLE else View.GONE
+            }
+
+            binding.fab.setOnClickListener {
+              findNavController().navigate(R.id.action_serversFragment_to_addServerFragment)
+            }
+
+            setHasOptionsMenu(true)
+          }
+
+          override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
+            inflater.inflate(R.menu.menu_servers, menu)
+          }
+
+          override fun onOptionsItemSelected(item: MenuItem): Boolean {
+            if (item.itemId == R.id.action_refresh_all) {
+              viewModel.checkAll()
+              return true
+            }
+            return super.onOptionsItemSelected(item)
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/ui/fragment/AddServerFragment.kt << 'EOF'
+        package com.servermonitor.ui.fragment
+
+        import android.os.Bundle
+        import android.view.*
+        import android.widget.ArrayAdapter
+        import android.widget.Toast
+        import androidx.fragment.app.Fragment
+        import androidx.lifecycle.ViewModelProvider
+        import androidx.navigation.fragment.findNavController
+        import com.servermonitor.R
+        import com.servermonitor.data.model.Server
+        import com.servermonitor.databinding.FragmentAddServerBinding
+        import com.servermonitor.ui.ServerViewModel
+
+        class AddServerFragment : Fragment(R.layout.fragment_add_server) {
+          private lateinit var binding: FragmentAddServerBinding
+          private lateinit var viewModel: ServerViewModel
+
+          override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+            super.onViewCreated(view, savedInstanceState)
+            binding = FragmentAddServerBinding.bind(view)
+            viewModel = ViewModelProvider(requireActivity())[ServerViewModel::class.java]
+
+            binding.spinnerType.adapter = ArrayAdapter.createFromResource(
+              requireContext(), R.array.server_types, android.R.layout.simple_spinner_dropdown_item
+            )
+
+            binding.btnSave.setOnClickListener {
+              val name = binding.etName.text.toString()
+              val type = binding.spinnerType.selectedItem.toString()
+              val host = binding.etHost.text.toString()
+              val port = binding.etPort.text.toString().toIntOrNull() ?: 0
+              if (name.isBlank() || host.isBlank()) {
+                Toast.makeText(requireContext(), "Name and Host required", Toast.LENGTH_SHORT).show()
+              } else {
+                viewModel.addServer(Server(name = name, type = type, host = host, port = port))
+                findNavController().navigateUp()
+              }
+            }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/ui/fragment/ServerDetailFragment.kt << 'EOF'
+        package com.servermonitor.ui.fragment
+
+        import android.os.Bundle
+        import android.view.*
+        import androidx.fragment.app.Fragment
+        import androidx.lifecycle.lifecycleScope
+        import androidx.navigation.fragment.navArgs
+        import com.servermonitor.R
+        import com.servermonitor.data.local.AppDatabase
+        import com.servermonitor.databinding.FragmentServerDetailBinding
+        import kotlinx.coroutines.launch
+
+        class ServerDetailFragment : Fragment(R.layout.fragment_server_detail) {
+          private lateinit var binding: FragmentServerDetailBinding
+          private val args: ServerDetailFragmentArgs by navArgs()
+
+          override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+            super.onViewCreated(view, savedInstanceState)
+            binding = FragmentServerDetailBinding.bind(view)
+
+            lifecycleScope.launch {
+              val db = AppDatabase.getInstance(requireContext())
+              val server = db.serverDao().getById(args.serverId)
+              server?.let {
+                binding.tvName.text = it.name
+                binding.tvType.text = it.type
+                binding.tvHost.text = "${it.host}:${it.port}"
+                binding.tvStatus.text = if (it.lastStatus) "ONLINE" else "OFFLINE"
+                binding.tvResponse.text = it.lastResponse
+                binding.tvResponseTime.text = "${it.responseTimeMs}ms"
+              }
+            }
+          }
+        }
+        EOF
+
+        cat > app/src/main/java/com/servermonitor/ui/adapter/ServerAdapter.kt << 'EOF'
+        package com.servermonitor.ui.adapter
+
+        import android.view.LayoutInflater
+        import android.view.ViewGroup
+        import androidx.recyclerview.widget.DiffUtil
+        import androidx.recyclerview.widget.ListAdapter
+        import androidx.recyclerview.widget.RecyclerView
+        import com.servermonitor.data.model.Server
+        import com.servermonitor.databinding.ItemServerBinding
+
+        class ServerAdapter(
+          private val onItemClick: (Server) -> Unit,
+          private val onCheckClick: (Server) -> Unit
+        ) : ListAdapter<Server, ServerAdapter.ViewHolder>(DiffCallback()) {
+
+          inner class ViewHolder(private val binding: ItemServerBinding) :
+            RecyclerView.ViewHolder(binding.root) {
+            fun bind(server: Server) {
+              binding.tvName.text = server.name
+              binding.tvType.text = server.type
+              binding.tvHost.text = server.host
+              binding.tvStatus.text = if (server.lastStatus) "ONLINE" else "OFFLINE"
+              binding.tvResponse.text = server.lastResponse
+              binding.tvResponseTime.text = "${server.responseTimeMs}ms"
+              binding.statusIndicator.setBackgroundColor(
+                if (server.lastStatus) 0xFF4CAF50.toInt() else 0xFF9E9E9E.toInt()
+              )
+              binding.root.setOnClickListener { onItemClick(server) }
+              binding.btnCheck.setOnClickListener { onCheckClick(server) }
+            }
+          }
+
+          override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val binding = ItemServerBinding.inflate(
+              LayoutInflater.from(parent.context), parent, false
+            )
+            return ViewHolder(binding)
+          }
+
+          override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            holder.bind(getItem(position))
+          }
+        }
+
+        class DiffCallback : DiffUtil.ItemCallback<Server>() {
+          override fun areItemsTheSame(oldItem: Server, newItem: Server) = oldItem.id == newItem.id
+          override fun areContentsTheSame(oldItem: Server, newItem: Server) = oldItem == newItem
+        }
+        EOF
+
+        # ---------- Resources ----------
+        cat > app/src/main/res/values/strings.xml << 'EOF'
+        <resources>
+          <string name="app_name">Server Monitor</string>
+          <string-array name="server_types">
+            <item>Website</item>
+            <item>TelegramBot</item>
+            <item>Minecraft</item>
+            <item>TCP</item>
+            <item>Ping</item>
+            <item>RestApi</item>
+            <item>Steam</item>
+            <item>Database</item>
+          </string-array>
+        </resources>
+        EOF
+
+        cat > app/src/main/res/values/themes.xml << 'EOF'
+        <resources>
+          <style name="Theme.ServerMonitor" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+            <item name="colorPrimary">#1565C0</item>
+            <item name="colorPrimaryVariant">#0D47A1</item>
+            <item name="colorOnPrimary">@android:color/white</item>
+            <item name="colorSecondary">#4CAF50</item>
+            <item name="colorOnSecondary">@android:color/white</item>
+          </style>
+        </resources>
+        EOF
+
+        cat > app/src/main/res/menu/menu_servers.xml << 'EOF'
+        <menu xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:app="http://schemas.android.com/apk/res-auto">
+          <item
+            android:id="@+id/action_refresh_all"
+            android:title="Check All"
+            android:icon="@android:drawable/ic_popup_sync"
+            app:showAsAction="ifRoom" />
+        </menu>
+        EOF
+
+        cat > app/src/main/res/menu/menu_detail.xml << 'EOF'
+        <menu xmlns:android="http://schemas.android.com/apk/res/android">
+          <item android:id="@+id/action_toggle" android:title="Enable/Disable"/>
+          <item android:id="@+id/action_delete" android:title="Delete"/>
+        </menu>
+        EOF
+
+        cat > app/src/main/res/menu/bottom_nav_menu.xml << 'EOF'
+        <menu xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:app="http://schemas.android.com/apk/res-auto">
+          <item
+            android:id="@+id/serversFragment"
+            android:icon="@android:drawable/ic_menu_manage"
+            android:title="Servers"
+            app:showAsAction="ifRoom" />
+        </menu>
+        EOF
+
+        cat > app/src/main/res/navigation/nav_graph.xml << 'EOF'
+        <navigation xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:app="http://schemas.android.com/apk/res-auto"
+          android:id="@+id/nav_graph"
+          app:startDestination="@id/serversFragment">
+
+          <fragment
+            android:id="@+id/serversFragment"
+            android:name="com.servermonitor.ui.fragment.ServersFragment"
+            android:label="Servers">
+            <action
+              android:id="@+id/action_serversFragment_to_addServerFragment"
+              app:destination="@id/addServerFragment" />
+            <action
+              android:id="@+id/action_serversFragment_to_serverDetailFragment"
+              app:destination="@id/serverDetailFragment" />
+          </fragment>
+
+          <fragment
+            android:id="@+id/addServerFragment"
+            android:name="com.servermonitor.ui.fragment.AddServerFragment"
+            android:label="Add Server" />
+
+          <fragment
+            android:id="@+id/serverDetailFragment"
+            android:name="com.servermonitor.ui.fragment.ServerDetailFragment"
+            android:label="Server Detail">
+            <argument
+              android:name="serverId"
+              app:argType="long" />
+          </fragment>
+        </navigation>
+        EOF
+
+        cat > app/src/main/res/layout/fragment_servers.xml << 'EOF'
+        <androidx.coordinatorlayout.widget.CoordinatorLayout
+          xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:app="http://schemas.android.com/apk/res-auto"
+          android:layout_width="match_parent"
+          android:layout_height="match_parent">
+
+          <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingBottom="80dp" />
+
+          <TextView
+            android:id="@+id/emptyView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="No servers added yet.\nTap + to add one."
+            android:textAlignment="center"
+            android:textColor="#888888"
+            android:textSize="16sp"
+            android:visibility="gone" />
+
+          <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="16dp"
+            android:contentDescription="Add server"
+            android:src="@android:drawable/ic_input_add"
+            app:layout_behavior="com.google.android.material.behavior.HideBottomViewOnScrollBehavior" />
+        </androidx.coordinatorlayout.widget.CoordinatorLayout>
+        EOF
+
+        cat > app/src/main/res/layout/item_server.xml << 'EOF'
+        <com.google.android.material.card.MaterialCardView
+          xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:app="http://schemas.android.com/apk/res-auto"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginHorizontal="12dp"
+          android:layout_marginVertical="6dp"
+          app:cardCornerRadius="12dp"
+          app:cardElevation="2dp">
+
+          <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="12dp">
+
+            <View
+              android:id="@+id/statusIndicator"
+              android:layout_width="4dp"
+              android:layout_height="match_parent"
+              android:layout_marginEnd="12dp"
+              android:background="#9E9E9E"
+              android:minHeight="60dp" />
+
+            <LinearLayout
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:orientation="vertical">
+
+              <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <TextView
+                  android:id="@+id/tvType"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:textSize="18sp"
+                  android:layout_marginEnd="6dp"
+                  android:text="🌐" />
+                <TextView
+                  android:id="@+id/tvName"
+                  android:layout_width="0dp"
+                  android:layout_height="wrap_content"
+                  android:layout_weight="1"
+                  android:textSize="16sp"
+                  android:textStyle="bold"
+                  android:text="Server Name" />
+                <TextView
+                  android:id="@+id/tvStatus"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:textSize="12sp"
+                  android:textStyle="bold"
+                  android:text="ONLINE" />
+              </LinearLayout>
+
+              <TextView
+                android:id="@+id/tvHost"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:textColor="#888888"
+                android:text="example.com" />
+
+              <TextView
+                android:id="@+id/tvResponse"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textColor="#AAAAAA"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:text="Response..." />
+
+              <TextView
+                android:id="@+id/tvResponseTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textColor="#BBBBBB"
+                android:text="--ms" />
+            </LinearLayout>
+
+            <ImageButton
+              android:id="@+id/btnCheck"
+              android:layout_width="40dp"
+              android:layout_height="40dp"
+              android:layout_gravity="center_vertical"
+              android:background="?attr/selectableItemBackgroundBorderless"
+              android:contentDescription="Check now"
+              android:src="@android:drawable/ic_popup_sync"
+              android:tint="#2196F3" />
+          </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+        EOF
+
+        cat > app/src/main/res/layout/fragment_add_server.xml << 'EOF'
+        <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+          android:layout_width="match_parent"
+          android:layout_height="match_parent"
+          android:orientation="vertical"
+          android:padding="16dp">
+
+          <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Name">
+            <com.google.android.material.textfield.TextInputEditText
+              android:id="@+id/etName"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content" />
+          </com.google.android.material.textfield.TextInputLayout>
+
+          <Spinner
+            android:id="@+id/spinnerType"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/spinner_bg" />
+
+          <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="Host">
+            <com.google.android.material.textfield.TextInputEditText
+              android:id="@+id/etHost"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content" />
+          </com.google.android.material.textfield.TextInputLayout>
+
+          <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="Port (optional)">
+            <com.google.android.material.textfield.TextInputEditText
+              android:id="@+id/etPort"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:inputType="number" />
+          </com.google.android.material.textfield.TextInputLayout>
+
+          <Button
+            android:id="@+id/btnSave"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Save Server" />
+        </LinearLayout>
+        EOF
+
+        cat > app/src/main/res/layout/fragment_server_detail.xml << 'EOF'
+        <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+          android:layout_width="match_parent"
+          android:layout_height="match_parent"
+          android:orientation="vertical"
+          android:padding="16dp">
+
+          <TextView
+            android:id="@+id/tvName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:text="Server Name" />
+
+          <TextView
+            android:id="@+id/tvType"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:text="Type" />
+
+          <TextView
+            android:id="@+id/tvHost"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="16sp"
+            android:layout_marginTop="8dp"
+            android:text="host:port" />
+
+          <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginVertical="16dp"
+            android:background="#E0E0E0" />
+
+          <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:text="Status: UNKNOWN" />
+
+          <TextView
+            android:id="@+id/tvResponse"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:layout_marginTop="8dp"
+            android:text="Response" />
+
+          <TextView
+            android:id="@+id/tvResponseTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:layout_marginTop="4dp"
+            android:text="Response time" />
+        </LinearLayout>
+        EOF
+
+        cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+        <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:app="http://schemas.android.com/apk/res-auto"
+          android:layout_width="match_parent"
+          android:layout_height="match_parent"
+          android:orientation="vertical">
+
+          <androidx.fragment.app.FragmentContainerView
+            android:id="@+id/nav_host_fragment"
+            android:name="androidx.navigation.fragment.NavHostFragment"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            app:defaultNavHost="true"
+            app:navGraph="@navigation/nav_graph" />
+
+          <com.google.android.material.bottomnavigation.BottomNavigationView
+            android:id="@+id/bottomNavigation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:menu="@menu/bottom_nav_menu" />
+        </LinearLayout>
+        EOF
+
+        cat > app/src/main/res/drawable/spinner_bg.xml << 'EOF'
+        <shape xmlns:android="http://schemas.android.com/apk/res/android">
+          <stroke android:width="1dp" android:color="#CCCCCC" />
+          <corners android:radius="4dp" />
+          <padding android:left="8dp" android:right="8dp" android:top="4dp" android:bottom="4dp" />
+        </shape>
+        EOF
+
+        cat > app/src/main/AndroidManifest.xml << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+          <uses-permission android:name="android.permission.INTERNET" />
+          <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+          <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+          <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+          <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+          <application
+            android:name=".App"
+            android:allowBackup="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:supportsRtl="true"
+            android:theme="@style/Theme.ServerMonitor">
+
+            <activity
+              android:name=".ui.MainActivity"
+              android:exported="true">
+              <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+              </intent-filter>
+            </activity>
+
+            <receiver
+              android:name=".service.BootReceiver"
+              android:exported="true">
+              <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+              </intent-filter>
+            </receiver>
+          </application>
+        </manifest>
+        EOF
+
+        # Simple icons (just placeholder)
+        mkdir -p app/src/main/res/mipmap-hdpi
+        echo "placeholder" > app/src/main/res/mipmap-hdpi/ic_launcher.png
+        echo "placeholder" > app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+
+        # App class (empty)
+        cat > app/src/main/java/com/servermonitor/App.kt << 'EOF'
+        package com.servermonitor
+
+        import android.app.Application
+
+        class App : Application()
+        EOF
+
+        # Gradle wrapper property file (needed for setup-gradle, but action will provide Gradle)
+        mkdir -p gradle/wrapper
+        cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+        distributionBase=GRADLE_USER_HOME
+        distributionPath=wrapper/dists
+        distributionUrl=https\://services.gradle.org/distributions/gradle-8.2-bin.zip
+        zipStoreBase=GRADLE_USER_HOME
+        zipStorePath=wrapper/dists
+        EOF
+
     - run: gradle assembleDebug
     - uses: actions/upload-artifact@v4
       with:
